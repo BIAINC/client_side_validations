@@ -316,8 +316,9 @@
             return options.message;
           }
         },
-        confirmation: function(element, options) {
-          if (element.val() !== jQuery("#" + (element.attr('id')) + "_confirmation").val()) {
+        confirmation: function (element, options) {
+          var confirmationFieldValue = jQuery('#' + element.attr('id') + '_confirmation').val();
+          if (confirmationFieldValue && element.val() !== confirmationFieldValue) {
             return options.message;
           }
         }
