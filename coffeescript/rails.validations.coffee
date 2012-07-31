@@ -24,7 +24,7 @@ $.fn.validate = ->
       'form:validate:fail'  : (eventData) -> ClientSideValidations.callbacks.form.fail(  form, eventData)
       'form:validate:pass'  : (eventData) -> ClientSideValidations.callbacks.form.pass(  form, eventData)
     }
-    form.find('[data-validate="true"]:input:enabled:not(:radio)').live(event, binding) for event, binding of {
+    form.on(event, '[data-validate="true"]:input:enabled:not(:radio)', binding) for event, binding of {
       'focusout':                -> $(@).isValid(settings.validators)
       'change':                  -> $(@).data('changed', true)
       # Callbacks
@@ -43,7 +43,7 @@ $.fn.validate = ->
     }
 
     # Checkboxes - Live events don't support filter
-    form.find('[data-validate="true"]:checkbox').live('click', ->
+    form.on('click', '[data-validate="true"]:checkbox', ->
        $(@).isValid(settings.validators)
        # If we don't return true here the checkbox will immediately uncheck itself.
        return true

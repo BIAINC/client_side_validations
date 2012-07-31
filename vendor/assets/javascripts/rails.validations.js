@@ -73,9 +73,9 @@
       };
       for (event in _ref1) {
         binding = _ref1[event];
-        form.find('[data-validate="true"]:input:enabled:not(:radio)').live(event, binding);
+        form.on(event, '[data-validate="true"]:input:enabled:not(:radio)', binding);
       }
-      form.find('[data-validate="true"]:checkbox').live('click', function() {
+      form.on('click', '[data-validate="true"]:checkbox', function() {
         $(this).isValid(settings.validators);
         return true;
       });
