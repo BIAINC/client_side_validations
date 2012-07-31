@@ -16,7 +16,7 @@ $.fn.validate = ->
       ClientSideValidations.formBuilders[settings.type].remove(element, settings)
 
     # Set up the events for the form
-    form.submit -> form.isValid(settings.validators)
+    form.submit (eventData) -> eventData.preventDefault() unless form.isValid(settings.validators)
     form.bind(event, binding) for event, binding of {
       'ajax:beforeSend'     : (eventData) -> form.isValid(settings.validators) if eventData.target == @
       'form:validate:after' : (eventData) -> ClientSideValidations.callbacks.form.after( form, eventData)
@@ -76,7 +76,9 @@ validateForm = (form, validators) ->
 
   valid = true
   form.find('[data-validate="true"]:input:enabled').each ->
-    valid = false if $(@).isValid(validators)
+    valid = false unless $(@).isValid(validators)
+    # we don't want the loop to break out by mistake
+    true
 
   if valid then form.trigger('form:validate:pass') else form.trigger('form:validate:fail')
 
@@ -93,17 +95,25 @@ validateElement = (element, validators) ->
     # Because 'length' is defined on the list of validators we cannot call jQuery.each on
     context = ClientSideValidations.validators.local
     for kind, fn of context
-      if validators[kind] and (message = fn.call(context, element, validators[kind]))
-        element.trigger('element:validate:fail', message).data('valid', false)
-        valid = false
-        break
+      if validators[kind]
+        for validator in validators[kind]
+          if message = fn.call(context, element, validator)
+            element.trigger('element:validate:fail', message).data('valid', false)
+            valid = false
+            break
+        unless valid
+          break
 
     if valid
       context = ClientSideValidations.validators.remote
       for kind, fn of context
-        if validators[kind] and (message = fn.call(context, element, validators[kind]))
-          element.trigger('element:validate:fail', message).data('valid', false)
-          valid = false
+        if validators[kind]
+          for validator in validators[kind]
+            if message = fn.call(context, element, validator)
+              element.trigger('element:validate:fail', message).data('valid', false)
+              valid = false
+              break
+        unless valid
           break
 
     if valid
@@ -111,7 +121,7 @@ validateElement = (element, validators) ->
       element.trigger('element:validate:pass')
 
   element.trigger('element:validate:after')
-  element.data('valid') == false ? false : true
+  element.data('valid') != false
 
 # Main hook
 # If new forms are dynamically introduced into the DOM the .validate() method
@@ -140,15 +150,17 @@ window.ClientSideValidations =
         if message
           return if options.allow_blank == true
           return message
-        
+
         return options.message if options.with and !options.with.test(element.val())
         return options.message if options.without and options.without.test(element.val())
 
       numericality: (element, options) ->
-        unless /^-?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d*)?$/.test(element.val())
+        val = jQuery.trim(element.val())
+        unless ClientSideValidations.patterns.numericality.test(val)
+          return if options.allow_blank == true
           return options.messages.numericality
 
-        if options.only_integer and !/^[+-]?\d+$/.test(element.val())
+        if options.only_integer and !/^[+-]?\d+$/.test(val)
           return options.messages.only_integer
 
         CHECKS =
@@ -158,15 +170,23 @@ window.ClientSideValidations =
           less_than: '<'
           less_than_or_equal_to: '<='
 
+        form = $(element[0].form)
         # options[check] may be 0 so we must check for undefined
         for check, operator of CHECKS when options[check]?
-          fn = new Function("return #{element.val()} #{operator} #{options[check]}")
+          if !isNaN(parseFloat(options[check])) && isFinite(options[check])
+            check_value = options[check]
+          else if form.find("[name*=#{options[check]}]").size() == 1
+            check_value = form.find("[name*=#{options[check]}]").val()
+          else
+            return
+
+          fn = new Function("return #{val} #{operator} #{check_value}")
           return options.messages[check] unless fn()
 
-        if options.odd and !(parseInt(element.val(), 10) % 2)
+        if options.odd and !(parseInt(val, 10) % 2)
           return options.messages.odd
 
-        if options.even and (parseInt(element.val(), 10) % 2)
+        if options.even and (parseInt(val, 10) % 2)
           return options.messages.even
 
       length: (element, options) ->
@@ -230,6 +250,38 @@ window.ClientSideValidations =
         else if element.val() != confirmationFieldValue
           return options.message
 
+      uniqueness: (element, options) ->
+        name = element.attr('name')
+
+        # only check uniqueness if we're in a nested form
+        if /_attributes\]\[\d/.test(name)
+          matches = name.match(/^(.+_attributes\])\[\d+\](.+)$/)
+          name_prefix = matches[1]
+          name_suffix = matches[2]
+          value = element.val()
+
+          if name_prefix && name_suffix
+            form = element.closest('form')
+            valid = true
+
+            form.find(':input[name^="' + name_prefix + '"][name$="' + name_suffix + '"]').each ->
+              if $(@).attr('name') != name
+                if $(@).val() == value
+                  valid = false
+                  $(@).data('notLocallyUnique', true)
+                else
+                  # items that were locally non-unique which become locally unique need to be
+                  # marked as changed, so they will get revalidated and thereby have their
+                  # error state cleared. but we should only do this once; therefore the
+                  # notLocallyUnique flag.
+                  if $(this).data('notLocallyUnique')
+                    $(this)
+                      .removeData('notLocallyUnique')
+                      .data('changed', true)
+
+            if(!valid)
+              return options.message
+
     remote:
       uniqueness: (element, options) ->
         message = ClientSideValidations.validators.local.presence(element, options)
@@ -278,10 +330,11 @@ window.ClientSideValidations =
   formBuilders:
     'ActionView::Helpers::FormBuilder':
       add: (element, settings, message) ->
-        if element.data('valid') != false and not jQuery("label.message[for='#{element.attr('id')}']")[0]?
+        form = $(element[0].form)
+        if element.data('valid') != false and not form.find("label.message[for='#{element.attr('id')}']")[0]?
           inputErrorField = jQuery(settings.input_tag)
           labelErrorField = jQuery(settings.label_tag)
-          label = jQuery("label[for='#{element.attr('id')}']:not(.message)")
+          label = form.find("label[for='#{element.attr('id')}']:not(.message)")
 
           element.attr('autofocus', false) if element.attr('autofocus')
 
@@ -289,15 +342,16 @@ window.ClientSideValidations =
           inputErrorField.find('span#input_tag').replaceWith(element)
           inputErrorField.find('label.message').attr('for', element.attr('id'))
           labelErrorField.find('label.message').attr('for', element.attr('id'))
-          label.replaceWith(labelErrorField)
+          labelErrorField.insertAfter(label)
           labelErrorField.find('label#label_tag').replaceWith(label)
 
-        jQuery("label.message[for='#{element.attr('id')}']").text(message)
+        form.find("label.message[for='#{element.attr('id')}']").text(message)
 
       remove: (element, settings) ->
+        form = $(element[0].form)
         errorFieldClass = jQuery(settings.input_tag).attr('class')
         inputErrorField = element.closest(".#{errorFieldClass.replace(" ", ".")}")
-        label = jQuery("label[for='#{element.attr('id')}']:not(.message)")
+        label = form.find("label[for='#{element.attr('id')}']:not(.message)")
         labelErrorField = label.closest(".#{errorFieldClass}")
 
         if inputErrorField[0]
@@ -305,6 +359,9 @@ window.ClientSideValidations =
           inputErrorField.replaceWith(element)
           label.detach()
           labelErrorField.replaceWith(label)
+
+  patterns:
+    numericality: /^(-|\+)?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d*)?$/
 
   callbacks:
     element:
